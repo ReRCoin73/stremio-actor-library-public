@@ -56,7 +56,7 @@ function buildManifest(actors, logoUrl) {
     id: 'community.bibliotecaporactor.publico',
     version: '1.0.0',
     name: 'Biblioteca por Ator',
-    description: 'Sua biblioteca do Stremio, filtravel por ator principal',
+    description: 'Filtra sua biblioteca pessoal do Stremio (filmes e series) pelo ator principal de cada titulo. Configuravel: cada pessoa entra com a propria conta Stremio numa pagina de configuracao e recebe um addon individual - login e senha nao ficam armazenados, sao usados so na hora de gerar a chave de acesso.',
     logo: logoUrl,
     resources: ['catalog'],
     types: ['movie', 'series'],
