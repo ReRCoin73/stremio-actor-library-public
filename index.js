@@ -18,6 +18,7 @@ app.use((req, res, next) => {
 });
 
 const userCaches = new Map(); // authKey -> { updatedAt, items, actors }
+const building = new Set(); // authKeys com um build rodando agora, evita duplicar trabalho
 
 // -------- Config vai codificada na URL, sem banco de dados --------
 function encodeConfig(obj) {
@@ -27,8 +28,12 @@ function decodeConfig(str) {
   return JSON.parse(Buffer.from(str, 'base64url').toString('utf-8'));
 }
 
-// -------- Monta/atualiza o cache de UM usuario (biblioteca + elenco) --------
-async function getOrBuildCache(authKey) {
+function snapshot(authKey) {
+  return userCaches.get(authKey) || { updatedAt: 0, items: [], actors: [] };
+}
+
+// -------- Builda a biblioteca+elenco de UM usuario, atualizando aos poucos --------
+async function buildCache(authKey) {
   const existing = userCaches.get(authKey);
   const previousById = new Map((existing?.items || []).map(i => [i.id, i]));
 
@@ -36,15 +41,24 @@ async function getOrBuildCache(authKey) {
   const enriched = [];
   const actorSet = new Set();
 
+  // primeiro aproveita tudo que ja tinha sido buscado antes (rapido, sem chamar TMDB de novo)
   for (const item of libraryItems) {
     const already = previousById.get(item._id);
     if (already) {
-      // titulo ja conhecido: reaproveita o elenco, nao gasta chamada na TMDB de novo
       already.cast.forEach(name => actorSet.add(name));
       enriched.push(already);
-      continue;
     }
-    // titulo novo na biblioteca: busca o elenco agora, na hora
+  }
+  userCaches.set(authKey, {
+    updatedAt: Date.now(),
+    items: [...enriched],
+    actors: Array.from(actorSet).sort((a, b) => a.localeCompare(b))
+  });
+
+  // agora busca so os titulos novos, atualizando o cache a cada um (quem ja estiver
+  // usando o addon ve a lista crescendo aos poucos, em vez de esperar tudo terminar)
+  for (const item of libraryItems) {
+    if (previousById.has(item._id)) continue;
     try {
       const cast = await getTopCast(item._id, item.type);
       cast.forEach(name => actorSet.add(name));
@@ -52,16 +66,19 @@ async function getOrBuildCache(authKey) {
     } catch (err) {
       enriched.push({ id: item._id, type: item.type, name: item.name, poster: item.poster, cast: [] });
     }
+    userCaches.set(authKey, {
+      updatedAt: Date.now(),
+      items: [...enriched],
+      actors: Array.from(actorSet).sort((a, b) => a.localeCompare(b))
+    });
     await new Promise(r => setTimeout(r, 300)); // limite de requisicoes do TMDB gratis
   }
+}
 
-  const cache = {
-    updatedAt: Date.now(),
-    items: enriched,
-    actors: Array.from(actorSet).sort((a, b) => a.localeCompare(b))
-  };
-  userCaches.set(authKey, cache);
-  return cache;
+function ensureBuilding(authKey) {
+  if (building.has(authKey)) return;
+  building.add(authKey);
+  buildCache(authKey).catch(() => {}).finally(() => building.delete(authKey));
 }
 
 function buildManifest(actors, logoUrl, configurationRequired) {
@@ -141,7 +158,7 @@ app.get('/configure', (req, res) => {
       const email = document.getElementById('email').value;
       const password = document.getElementById('password').value;
       const result = document.getElementById('result');
-      result.textContent = 'Entrando e montando seu catálogo... isso pode levar 1-2 minutos na primeira vez, não feche essa página.';
+      result.textContent = 'Entrando...';
       try {
         const res = await fetch('/configure', {
           method: 'POST',
@@ -176,8 +193,7 @@ app.post('/configure', async (req, res) => {
     const manifestUrl = `https://${host}/${config}/manifest.json`;
     const stremioLink = `stremio://${host}/${config}/manifest.json`;
 
-    // monta o cache agora, antes de responder - assim o link ja sai pronto pra usar
-    await getOrBuildCache(authKey);
+    ensureBuilding(authKey); // comeca a montar em segundo plano, sem segurar a resposta
 
     res.json({ manifestUrl, stremioLink });
   } catch (err) {
@@ -191,10 +207,11 @@ app.get('/manifest.json', (req, res) => {
   res.json(buildManifest([], logoUrl, true));
 });
 
-app.get('/:config/manifest.json', async (req, res) => {
+app.get('/:config/manifest.json', (req, res) => {
   try {
     const { a: authKey } = decodeConfig(req.params.config);
-    const cache = await getOrBuildCache(authKey);
+    ensureBuilding(authKey);
+    const cache = snapshot(authKey);
     const logoUrl = `https://${req.get('host')}/logo.png`;
     res.json(buildManifest(cache.actors, logoUrl, false));
   } catch (err) {
@@ -202,18 +219,19 @@ app.get('/:config/manifest.json', async (req, res) => {
   }
 });
 
-app.get('/:config/catalog/:type/:idWithExt', async (req, res) => {
-  await handleCatalog(req, res, req.params.idWithExt, null);
+app.get('/:config/catalog/:type/:idWithExt', (req, res) => {
+  handleCatalog(req, res, req.params.idWithExt, null);
 });
 
-app.get('/:config/catalog/:type/:id/:extraWithExt', async (req, res) => {
-  await handleCatalog(req, res, req.params.id, req.params.extraWithExt);
+app.get('/:config/catalog/:type/:id/:extraWithExt', (req, res) => {
+  handleCatalog(req, res, req.params.id, req.params.extraWithExt);
 });
 
-async function handleCatalog(req, res, idRaw, extraRaw) {
+function handleCatalog(req, res, idRaw, extraRaw) {
   try {
     const { a: authKey } = decodeConfig(req.params.config);
-    const cache = await getOrBuildCache(authKey);
+    ensureBuilding(authKey);
+    const cache = snapshot(authKey);
     const type = req.params.type;
 
     let actorFiltro = null;
