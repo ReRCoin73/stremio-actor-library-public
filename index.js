@@ -164,6 +164,11 @@ app.post('/configure', async (req, res) => {
 });
 
 // -------- Endpoints do addon (por usuario, via config na URL) --------
+app.get('/manifest.json', (req, res) => {
+  const logoUrl = `https://${req.get('host')}/logo.png`;
+  res.json(buildManifest([], logoUrl));
+});
+
 app.get('/:config/manifest.json', async (req, res) => {
   try {
     const { a: authKey } = decodeConfig(req.params.config);
