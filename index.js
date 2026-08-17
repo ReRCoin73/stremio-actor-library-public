@@ -9,6 +9,13 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
 
 const userCaches = new Map(); // authKey -> { updatedAt, items, actors }
 
@@ -134,7 +141,7 @@ app.get('/configure', (req, res) => {
       const email = document.getElementById('email').value;
       const password = document.getElementById('password').value;
       const result = document.getElementById('result');
-      result.textContent = 'Entrando...';
+      result.textContent = 'Entrando e montando seu catálogo... isso pode levar 1-2 minutos na primeira vez, não feche essa página.';
       try {
         const res = await fetch('/configure', {
           method: 'POST',
@@ -169,8 +176,8 @@ app.post('/configure', async (req, res) => {
     const manifestUrl = `https://${host}/${config}/manifest.json`;
     const stremioLink = `stremio://${host}/${config}/manifest.json`;
 
-    // comeca a montar o cache em segundo plano, sem fazer a pessoa esperar
-    getOrBuildCache(authKey).catch(() => {});
+    // monta o cache agora, antes de responder - assim o link ja sai pronto pra usar
+    await getOrBuildCache(authKey);
 
     res.json({ manifestUrl, stremioLink });
   } catch (err) {
