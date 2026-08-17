@@ -29,7 +29,13 @@ function decodeConfig(str) {
 }
 
 function snapshot(authKey) {
-  return userCaches.get(authKey) || { updatedAt: 0, items: [], actors: [] };
+  return userCaches.get(authKey) || { updatedAt: 0, items: [], movieActors: [], seriesActors: [] };
+}
+
+function actorsOfType(items, type) {
+  const set = new Set();
+  items.filter(i => i.type === type).forEach(i => i.cast.forEach(name => set.add(name)));
+  return Array.from(set).sort((a, b) => a.localeCompare(b));
 }
 
 // -------- Builda a biblioteca+elenco de UM usuario, atualizando aos poucos --------
@@ -39,20 +45,17 @@ async function buildCache(authKey) {
 
   const libraryItems = await fetchLibrary(authKey);
   const enriched = [];
-  const actorSet = new Set();
 
   // primeiro aproveita tudo que ja tinha sido buscado antes (rapido, sem chamar TMDB de novo)
   for (const item of libraryItems) {
     const already = previousById.get(item._id);
-    if (already) {
-      already.cast.forEach(name => actorSet.add(name));
-      enriched.push(already);
-    }
+    if (already) enriched.push(already);
   }
   userCaches.set(authKey, {
     updatedAt: Date.now(),
     items: [...enriched],
-    actors: Array.from(actorSet).sort((a, b) => a.localeCompare(b))
+    movieActors: actorsOfType(enriched, 'movie'),
+    seriesActors: actorsOfType(enriched, 'series')
   });
 
   // agora busca so os titulos novos, atualizando o cache a cada um (quem ja estiver
@@ -61,7 +64,6 @@ async function buildCache(authKey) {
     if (previousById.has(item._id)) continue;
     try {
       const cast = await getTopCast(item._id, item.type);
-      cast.forEach(name => actorSet.add(name));
       enriched.push({ id: item._id, type: item.type, name: item.name, poster: item.poster, cast });
     } catch (err) {
       enriched.push({ id: item._id, type: item.type, name: item.name, poster: item.poster, cast: [] });
@@ -69,7 +71,8 @@ async function buildCache(authKey) {
     userCaches.set(authKey, {
       updatedAt: Date.now(),
       items: [...enriched],
-      actors: Array.from(actorSet).sort((a, b) => a.localeCompare(b))
+      movieActors: actorsOfType(enriched, 'movie'),
+      seriesActors: actorsOfType(enriched, 'series')
     });
     await new Promise(r => setTimeout(r, 300)); // limite de requisicoes do TMDB gratis
   }
@@ -81,7 +84,7 @@ function ensureBuilding(authKey) {
   buildCache(authKey).catch(() => {}).finally(() => building.delete(authKey));
 }
 
-function buildManifest(actors, logoUrl, configurationRequired) {
+function buildManifest(movieActors, seriesActors, logoUrl, configurationRequired) {
   return {
     id: 'community.bibliotecaporactor.publico',
     version: '1.0.0',
@@ -95,13 +98,13 @@ function buildManifest(actors, logoUrl, configurationRequired) {
         type: 'movie',
         id: 'lib-por-ator-movie',
         name: 'Meus Filmes por Ator',
-        extra: [{ name: 'genre', isRequired: false, options: actors }]
+        extra: [{ name: 'genre', isRequired: false, options: movieActors }]
       },
       {
         type: 'series',
         id: 'lib-por-ator-series',
         name: 'Minhas Series por Ator',
-        extra: [{ name: 'genre', isRequired: false, options: actors }]
+        extra: [{ name: 'genre', isRequired: false, options: seriesActors }]
       }
     ],
     behaviorHints: { configurable: true, configurationRequired: !!configurationRequired }
@@ -204,7 +207,7 @@ app.post('/configure', async (req, res) => {
 // -------- Endpoints do addon (por usuario, via config na URL) --------
 app.get('/manifest.json', (req, res) => {
   const logoUrl = `https://${req.get('host')}/logo.png`;
-  res.json(buildManifest([], logoUrl, true));
+  res.json(buildManifest([], [], logoUrl, true));
 });
 
 app.get('/:config/manifest.json', (req, res) => {
@@ -213,7 +216,7 @@ app.get('/:config/manifest.json', (req, res) => {
     ensureBuilding(authKey);
     const cache = snapshot(authKey);
     const logoUrl = `https://${req.get('host')}/logo.png`;
-    res.json(buildManifest(cache.actors, logoUrl, false));
+    res.json(buildManifest(cache.movieActors, cache.seriesActors, logoUrl, false));
   } catch (err) {
     res.status(400).json({ error: 'Configuracao invalida' });
   }
