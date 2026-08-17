@@ -16,6 +16,12 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
+app.use((req, res, next) => {
+  if (req.path.endsWith('/manifest.json') || req.path.includes('/catalog/')) {
+    res.set('Cache-Control', 'no-cache, max-age=0');
+  }
+  next();
+});
 
 const userCaches = new Map(); // authKey -> { updatedAt, items, actors }
 const building = new Set(); // authKeys com um build rodando agora, evita duplicar trabalho
