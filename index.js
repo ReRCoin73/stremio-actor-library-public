@@ -4,6 +4,7 @@ const express = require('express');
 const { login } = require('./lib/stremioAuth');
 const { fetchLibrary } = require('./lib/stremioLibrary');
 const { getTopCast } = require('./lib/tmdb');
+const store = require('./lib/store');
 
 const app = express();
 app.use(express.json());
@@ -23,8 +24,7 @@ app.use((req, res, next) => {
   next();
 });
 
-const userCaches = new Map(); // authKey -> { updatedAt, items, actors }
-const building = new Set(); // authKeys com um build rodando agora, evita duplicar trabalho
+const building = new Set(); // authKeys com um build rodando agora neste processo, evita duplicar trabalho
 
 // -------- Config vai codificada na URL, sem banco de dados --------
 function encodeConfig(obj) {
@@ -34,8 +34,9 @@ function decodeConfig(str) {
   return JSON.parse(Buffer.from(str, 'base64url').toString('utf-8'));
 }
 
-function snapshot(authKey) {
-  return userCaches.get(authKey) || { updatedAt: 0, items: [], movieActors: [], seriesActors: [] };
+async function snapshot(authKey) {
+  const data = await store.load(authKey);
+  return data || { updatedAt: 0, items: [], movieActors: [], seriesActors: [] };
 }
 
 function actorsOfType(items, type) {
@@ -46,7 +47,7 @@ function actorsOfType(items, type) {
 
 // -------- Builda a biblioteca+elenco de UM usuario, atualizando aos poucos --------
 async function buildCache(authKey) {
-  const existing = userCaches.get(authKey);
+  const existing = await store.load(authKey);
   const previousById = new Map((existing?.items || []).map(i => [i.id, i]));
 
   const libraryItems = await fetchLibrary(authKey);
@@ -57,15 +58,16 @@ async function buildCache(authKey) {
     const already = previousById.get(item._id);
     if (already) enriched.push(already);
   }
-  userCaches.set(authKey, {
+  await store.save(authKey, {
     updatedAt: Date.now(),
     items: [...enriched],
     movieActors: actorsOfType(enriched, 'movie'),
     seriesActors: actorsOfType(enriched, 'series')
   });
 
-  // agora busca so os titulos novos, atualizando o cache a cada um (quem ja estiver
-  // usando o addon ve a lista crescendo aos poucos, em vez de esperar tudo terminar)
+  // agora busca so os titulos novos, salvando no banco a cada um (quem ja estiver
+  // usando o addon ve a lista crescendo aos poucos, em vez de esperar tudo terminar,
+  // e o progresso fica salvo mesmo que o servidor reinicie no meio do caminho)
   for (const item of libraryItems) {
     if (previousById.has(item._id)) continue;
     try {
@@ -74,7 +76,7 @@ async function buildCache(authKey) {
     } catch (err) {
       enriched.push({ id: item._id, type: item.type, name: item.name, poster: item.poster, cast: [] });
     }
-    userCaches.set(authKey, {
+    await store.save(authKey, {
       updatedAt: Date.now(),
       items: [...enriched],
       movieActors: actorsOfType(enriched, 'movie'),
@@ -216,11 +218,11 @@ app.get('/manifest.json', (req, res) => {
   res.json(buildManifest([], [], logoUrl, true));
 });
 
-app.get('/:config/manifest.json', (req, res) => {
+app.get('/:config/manifest.json', async (req, res) => {
   try {
     const { a: authKey } = decodeConfig(req.params.config);
     ensureBuilding(authKey);
-    const cache = snapshot(authKey);
+    const cache = await snapshot(authKey);
     const logoUrl = `https://${req.get('host')}/logo.png`;
     res.json(buildManifest(cache.movieActors, cache.seriesActors, logoUrl, false));
   } catch (err) {
@@ -228,19 +230,19 @@ app.get('/:config/manifest.json', (req, res) => {
   }
 });
 
-app.get('/:config/catalog/:type/:idWithExt', (req, res) => {
-  handleCatalog(req, res, req.params.idWithExt, null);
+app.get('/:config/catalog/:type/:idWithExt', async (req, res) => {
+  await handleCatalog(req, res, req.params.idWithExt, null);
 });
 
-app.get('/:config/catalog/:type/:id/:extraWithExt', (req, res) => {
-  handleCatalog(req, res, req.params.id, req.params.extraWithExt);
+app.get('/:config/catalog/:type/:id/:extraWithExt', async (req, res) => {
+  await handleCatalog(req, res, req.params.id, req.params.extraWithExt);
 });
 
-function handleCatalog(req, res, idRaw, extraRaw) {
+async function handleCatalog(req, res, idRaw, extraRaw) {
   try {
     const { a: authKey } = decodeConfig(req.params.config);
     ensureBuilding(authKey);
-    const cache = snapshot(authKey);
+    const cache = await snapshot(authKey);
     const type = req.params.type;
 
     let actorFiltro = null;
