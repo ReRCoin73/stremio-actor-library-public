@@ -1,4 +1,5 @@
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
 const { login } = require('./lib/stremioAuth');
 const { fetchLibrary } = require('./lib/stremioLibrary');
@@ -7,6 +8,7 @@ const { getTopCast } = require('./lib/tmdb');
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(express.static(path.join(__dirname, 'public')));
 
 const REFRESH_HOURS = 6;
 const userCaches = new Map(); // authKey -> { updatedAt, items, actors }
@@ -49,12 +51,13 @@ async function getOrBuildCache(authKey) {
   return cache;
 }
 
-function buildManifest(actors) {
+function buildManifest(actors, logoUrl) {
   return {
     id: 'community.bibliotecaporactor.publico',
     version: '1.0.0',
     name: 'Biblioteca por Ator',
     description: 'Sua biblioteca do Stremio, filtravel por ator principal',
+    logo: logoUrl,
     resources: ['catalog'],
     types: ['movie', 'series'],
     catalogs: [
@@ -165,7 +168,8 @@ app.get('/:config/manifest.json', async (req, res) => {
   try {
     const { a: authKey } = decodeConfig(req.params.config);
     const cache = await getOrBuildCache(authKey);
-    res.json(buildManifest(cache.actors));
+    const logoUrl = `https://${req.get('host')}/logo.png`;
+    res.json(buildManifest(cache.actors, logoUrl));
   } catch (err) {
     res.status(400).json({ error: 'Configuracao invalida' });
   }
