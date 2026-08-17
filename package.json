@@ -1,0 +1,14 @@
+{
+  "name": "stremio-actor-library-public",
+  "version": "1.0.0",
+  "description": "Versao publica e multiusuario do addon Stremio que filtra biblioteca por ator principal",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "node-fetch": "^2.7.0",
+    "dotenv": "^16.4.5"
+  }
+}
