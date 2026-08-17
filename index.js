@@ -214,7 +214,7 @@ app.post('/configure', async (req, res) => {
 
 // -------- Endpoints do addon (por usuario, via config na URL) --------
 app.get('/manifest.json', (req, res) => {
-  const logoUrl = `https://${req.get('host')}/logo.png`;
+  const logoUrl = `https://${req.get('host')}/logo.png?v=2`;
   res.json(buildManifest([], [], logoUrl, true));
 });
 
@@ -223,7 +223,7 @@ app.get('/:config/manifest.json', async (req, res) => {
     const { a: authKey } = decodeConfig(req.params.config);
     ensureBuilding(authKey);
     const cache = await snapshot(authKey);
-    const logoUrl = `https://${req.get('host')}/logo.png`;
+    const logoUrl = `https://${req.get('host')}/logo.png?v=2`;
     res.json(buildManifest(cache.movieActors, cache.seriesActors, logoUrl, false));
   } catch (err) {
     res.status(400).json({ error: 'Configuracao invalida' });
