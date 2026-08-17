@@ -10,7 +10,6 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-const REFRESH_HOURS = 6;
 const userCaches = new Map(); // authKey -> { updatedAt, items, actors }
 
 // -------- Config vai codificada na URL, sem banco de dados --------
@@ -24,14 +23,21 @@ function decodeConfig(str) {
 // -------- Monta/atualiza o cache de UM usuario (biblioteca + elenco) --------
 async function getOrBuildCache(authKey) {
   const existing = userCaches.get(authKey);
-  const stale = !existing || (Date.now() - existing.updatedAt > REFRESH_HOURS * 60 * 60 * 1000);
-  if (!stale) return existing;
+  const previousById = new Map((existing?.items || []).map(i => [i.id, i]));
 
   const libraryItems = await fetchLibrary(authKey);
   const enriched = [];
   const actorSet = new Set();
 
   for (const item of libraryItems) {
+    const already = previousById.get(item._id);
+    if (already) {
+      // titulo ja conhecido: reaproveita o elenco, nao gasta chamada na TMDB de novo
+      already.cast.forEach(name => actorSet.add(name));
+      enriched.push(already);
+      continue;
+    }
+    // titulo novo na biblioteca: busca o elenco agora, na hora
     try {
       const cast = await getTopCast(item._id, item.type);
       cast.forEach(name => actorSet.add(name));
@@ -51,7 +57,7 @@ async function getOrBuildCache(authKey) {
   return cache;
 }
 
-function buildManifest(actors, logoUrl) {
+function buildManifest(actors, logoUrl, configurationRequired) {
   return {
     id: 'community.bibliotecaporactor.publico',
     version: '1.0.0',
@@ -74,7 +80,7 @@ function buildManifest(actors, logoUrl) {
         extra: [{ name: 'genre', isRequired: false, options: actors }]
       }
     ],
-    behaviorHints: { configurable: true, configurationRequired: true }
+    behaviorHints: { configurable: true, configurationRequired: !!configurationRequired }
   };
 }
 
@@ -99,9 +105,14 @@ app.get('/configure', (req, res) => {
         background:#0a0a0d;color:#f2f2f0;font-size:15px;box-sizing:border-box;}
   button{width:100%;margin-top:22px;padding:14px;border-radius:10px;border:none;
          background:#3ecf6a;color:#0a0a0d;font-weight:700;font-size:15px;}
-  #result{margin-top:18px;font-size:14px;word-break:break-all;}
-  #result a{color:#3ecf6a;}
-  .err{color:#f0524b;}
+  #result{margin-top:20px;}
+  #result.err{color:#f0524b;font-size:14px;}
+  .install-btn{display:block;width:100%;box-sizing:border-box;text-align:center;
+        padding:14px;border-radius:10px;background:#3ecf6a;color:#0a0a0d;
+        font-weight:700;font-size:16px;text-decoration:none;margin-top:6px;}
+  .alt-label{font-size:13px;color:#8b8b93;margin-top:18px;margin-bottom:6px;}
+  .url-box{font-size:12px;color:#8b8b93;word-break:break-all;background:#0a0a0d;
+        border:1px solid #232328;border-radius:8px;padding:10px;}
 </style>
 </head>
 <body>
@@ -132,10 +143,14 @@ app.get('/configure', (req, res) => {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Erro desconhecido');
-        result.innerHTML = 'Pronto! <a href="' + data.stremioLink + '">Toca aqui pra instalar no Stremio</a>' +
-          '<br><br>Ou cola essa URL no Stremio (Addons > colar URL):<br>' + data.manifestUrl;
+        result.className = '';
+        result.innerHTML =
+          '<a class="install-btn" href="' + data.stremioLink + '">Instalar no Stremio</a>' +
+          '<div class="alt-label">Se o botão não abrir o app, cola essa URL manualmente no Stremio (Addons &gt; colar URL):</div>' +
+          '<div class="url-box">' + data.manifestUrl + '</div>';
       } catch (err) {
-        result.innerHTML = '<span class="err">' + err.message + '</span>';
+        result.className = 'err';
+        result.innerHTML = err.message;
       }
     });
   </script>
@@ -166,7 +181,7 @@ app.post('/configure', async (req, res) => {
 // -------- Endpoints do addon (por usuario, via config na URL) --------
 app.get('/manifest.json', (req, res) => {
   const logoUrl = `https://${req.get('host')}/logo.png`;
-  res.json(buildManifest([], logoUrl));
+  res.json(buildManifest([], logoUrl, true));
 });
 
 app.get('/:config/manifest.json', async (req, res) => {
@@ -174,7 +189,7 @@ app.get('/:config/manifest.json', async (req, res) => {
     const { a: authKey } = decodeConfig(req.params.config);
     const cache = await getOrBuildCache(authKey);
     const logoUrl = `https://${req.get('host')}/logo.png`;
-    res.json(buildManifest(cache.actors, logoUrl));
+    res.json(buildManifest(cache.actors, logoUrl, false));
   } catch (err) {
     res.status(400).json({ error: 'Configuracao invalida' });
   }
