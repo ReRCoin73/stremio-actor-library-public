@@ -90,7 +90,9 @@ async function persist(authKey, items) {
 function ensureBuilding(authKey) {
   if (building.has(authKey)) return;
   building.add(authKey);
-  buildCache(authKey).catch(() => {}).finally(() => building.delete(authKey));
+  buildCache(authKey)
+    .catch(err => console.error('Erro ao montar cache:', err.message))
+    .finally(() => building.delete(authKey));
 }
 
 function buildManifest(movieActors, seriesActors, logoUrl, configurationRequired) {
@@ -217,6 +219,10 @@ app.post('/configure', async (req, res) => {
 app.get('/manifest.json', (req, res) => {
   const logoUrl = `https://${req.get('host')}/logo.png?v=2`;
   res.json(buildManifest([], [], logoUrl, true));
+});
+
+app.get('/:config/configure', (req, res) => {
+  res.redirect('/configure');
 });
 
 app.get('/:config/manifest.json', async (req, res) => {
