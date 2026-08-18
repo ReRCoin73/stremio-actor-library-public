@@ -54,10 +54,11 @@ async function buildCache(authKey) {
   const enriched = [];
 
   // primeiro aproveita tudo que ja tinha sido buscado antes com sucesso
-  // (titulos que falharam antes ficam de fora daqui, pra tentar de novo mais abaixo)
+  // (titulos com elenco vazio ficam de fora daqui, pra tentar de novo mais abaixo -
+  // cobre tanto falhas novas quanto as que ja ficaram presas de testes anteriores)
   for (const item of libraryItems) {
     const already = previousById.get(item._id);
-    if (already && !already.castFailed) enriched.push(already);
+    if (already && already.cast && already.cast.length > 0) enriched.push(already);
   }
   await store.save(authKey, {
     updatedAt: Date.now(),
@@ -66,12 +67,12 @@ async function buildCache(authKey) {
     seriesActors: actorsOfType(enriched, 'series')
   });
 
-  // agora busca os titulos novos + os que falharam antes, salvando no banco a cada um
-  // (quem ja estiver usando o addon ve a lista crescendo aos poucos, em vez de esperar
-  // tudo terminar, e o progresso fica salvo mesmo que o servidor reinicie no meio do caminho)
+  // agora busca os titulos novos + os que ficaram sem elenco antes, salvando no banco a
+  // cada um (quem ja estiver usando o addon ve a lista crescendo aos poucos, em vez de
+  // esperar tudo terminar, e o progresso fica salvo mesmo que o servidor reinicie no meio)
   for (const item of libraryItems) {
     const already = previousById.get(item._id);
-    if (already && !already.castFailed) continue;
+    if (already && already.cast && already.cast.length > 0) continue;
     try {
       const cast = await getTopCast(item._id, item.type);
       enriched.push({ id: item._id, type: item.type, name: item.name, poster: item.poster, cast });
