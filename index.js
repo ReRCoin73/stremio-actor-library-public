@@ -53,10 +53,11 @@ async function buildCache(authKey) {
   const libraryItems = await fetchLibrary(authKey);
   const enriched = [];
 
-  // primeiro aproveita tudo que ja tinha sido buscado antes (rapido, sem chamar TMDB de novo)
+  // primeiro aproveita tudo que ja tinha sido buscado antes com sucesso
+  // (titulos que falharam antes ficam de fora daqui, pra tentar de novo mais abaixo)
   for (const item of libraryItems) {
     const already = previousById.get(item._id);
-    if (already) enriched.push(already);
+    if (already && !already.castFailed) enriched.push(already);
   }
   await store.save(authKey, {
     updatedAt: Date.now(),
@@ -65,16 +66,19 @@ async function buildCache(authKey) {
     seriesActors: actorsOfType(enriched, 'series')
   });
 
-  // agora busca so os titulos novos, salvando no banco a cada um (quem ja estiver
-  // usando o addon ve a lista crescendo aos poucos, em vez de esperar tudo terminar,
-  // e o progresso fica salvo mesmo que o servidor reinicie no meio do caminho)
+  // agora busca os titulos novos + os que falharam antes, salvando no banco a cada um
+  // (quem ja estiver usando o addon ve a lista crescendo aos poucos, em vez de esperar
+  // tudo terminar, e o progresso fica salvo mesmo que o servidor reinicie no meio do caminho)
   for (const item of libraryItems) {
-    if (previousById.has(item._id)) continue;
+    const already = previousById.get(item._id);
+    if (already && !already.castFailed) continue;
     try {
       const cast = await getTopCast(item._id, item.type);
       enriched.push({ id: item._id, type: item.type, name: item.name, poster: item.poster, cast });
     } catch (err) {
-      enriched.push({ id: item._id, type: item.type, name: item.name, poster: item.poster, cast: [] });
+      // marca como falho (nao "castFailed: false") pra tentar de novo na proxima vez,
+      // em vez de ficar preso com elenco vazio pra sempre
+      enriched.push({ id: item._id, type: item.type, name: item.name, poster: item.poster, cast: [], castFailed: true });
     }
     await store.save(authKey, {
       updatedAt: Date.now(),
@@ -82,7 +86,7 @@ async function buildCache(authKey) {
       movieActors: actorsOfType(enriched, 'movie'),
       seriesActors: actorsOfType(enriched, 'series')
     });
-    await new Promise(r => setTimeout(r, 300)); // limite de requisicoes do TMDB gratis
+    await new Promise(r => setTimeout(r, 600)); // limite de requisicoes do TMDB gratis
   }
 }
 
