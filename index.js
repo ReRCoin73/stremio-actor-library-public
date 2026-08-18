@@ -64,16 +64,22 @@ async function buildCache(authKey) {
   userCaches.set(authKey, { items: enriched });
 
   // agora melhora, um titulo de cada vez, so quem ainda esta sem elenco
-  for (let i = 0; i < enriched.length; i++) {
-    if (enriched[i].cast.length > 0) continue;
-    try {
-      const cast = await getTopCast(enriched[i].id, enriched[i].type);
-      enriched[i] = { ...enriched[i], cast };
-    } catch (err) {
-      console.error(`Sem elenco por enquanto: ${enriched[i].id} (${enriched[i].type}):`, err.message);
-    }
+  // processa em blocos paralelos (varios titulos ao mesmo tempo) em vez de um por um -
+  // muito mais rapido; a TMDB aguenta dezenas de pedidos simultaneos
+  const pendentes = enriched.map((item, idx) => ({ item, idx })).filter(x => x.item.cast.length === 0);
+  const TAMANHO_BLOCO = 15;
+
+  for (let i = 0; i < pendentes.length; i += TAMANHO_BLOCO) {
+    const bloco = pendentes.slice(i, i + TAMANHO_BLOCO);
+    await Promise.all(bloco.map(async ({ item, idx }) => {
+      try {
+        const cast = await getTopCast(item.id, item.type);
+        enriched[idx] = { ...item, cast };
+      } catch (err) {
+        console.error(`Sem elenco por enquanto: ${item.id} (${item.type}):`, err.message);
+      }
+    }));
     userCaches.set(authKey, { items: enriched });
-    await new Promise(r => setTimeout(r, 600)); // limite de requisicoes do TMDB gratis
   }
 }
 
