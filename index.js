@@ -219,6 +219,25 @@ app.get('/:config/configure', (req, res) => {
   res.redirect('/configure');
 });
 
+app.get('/:config/status', (req, res) => {
+  try {
+    const { a: authKey } = decodeConfig(req.params.config);
+    const cache = snapshot(authKey);
+    const total = cache.items.length;
+    const prontos = cache.items.filter(i => i.cast.length > 0).length;
+    res.json({
+      total,
+      prontos,
+      faltam: total - prontos,
+      construindo_agora: building.has(authKey),
+      filmes_com_ator: actorsOfType(cache.items, 'movie').length,
+      series_com_ator: actorsOfType(cache.items, 'series').length
+    });
+  } catch (err) {
+    res.status(400).json({ error: 'Configuracao invalida' });
+  }
+});
+
 app.get('/:config/manifest.json', (req, res) => {
   try {
     const { a: authKey } = decodeConfig(req.params.config);
