@@ -4,7 +4,6 @@ const express = require('express');
 const { login } = require('./lib/stremioAuth');
 const { fetchLibrary } = require('./lib/stremioLibrary');
 const { getTopCast } = require('./lib/tmdb');
-const store = require('./lib/store');
 
 const app = express();
 app.use(express.json());
@@ -24,9 +23,12 @@ app.use((req, res, next) => {
   next();
 });
 
-const building = new Set(); // authKeys com um build rodando agora neste processo, evita duplicar trabalho
+// Cache so na memoria do processo. Sem banco de dados: mais simples, menos pecas
+// que podem quebrar. Custo: se o servidor reiniciar, perde o progresso e remonta -
+// mas enquanto estiver rodando, titulo novo aparece rapido, sem reconstruir tudo.
+const userCaches = new Map(); // authKey -> { items: [...] }
+const building = new Set();
 
-// -------- Config vai codificada na URL, sem banco de dados --------
 function encodeConfig(obj) {
   return Buffer.from(JSON.stringify(obj)).toString('base64url');
 }
@@ -34,9 +36,8 @@ function decodeConfig(str) {
   return JSON.parse(Buffer.from(str, 'base64url').toString('utf-8'));
 }
 
-async function snapshot(authKey) {
-  const data = await store.load(authKey);
-  return data || { updatedAt: 0, items: [], movieActors: [], seriesActors: [] };
+function snapshot(authKey) {
+  return userCaches.get(authKey) || { items: [] };
 }
 
 function actorsOfType(items, type) {
@@ -45,23 +46,22 @@ function actorsOfType(items, type) {
   return Array.from(set).sort((a, b) => a.localeCompare(b));
 }
 
-// -------- Builda a biblioteca+elenco de UM usuario, atualizando aos poucos --------
+// -------- Builda a biblioteca+elenco de UM usuario, melhorando aos poucos --------
 async function buildCache(authKey) {
-  const existing = await store.load(authKey);
+  const existing = userCaches.get(authKey);
   const previousById = new Map((existing?.items || []).map(i => [i.id, i]));
 
   const libraryItems = await fetchLibrary(authKey);
 
   // baseline: TODO titulo da biblioteca entra aqui na hora, mesmo sem elenco ainda.
-  // O catalogo nunca pode ficar menor do que a biblioteca real - so o elenco (usado
-  // no filtro por ator) e que vai sendo preenchido aos poucos, por cima, sem apagar nada.
+  // O catalogo nunca fica menor que a biblioteca real - so o elenco (usado no filtro
+  // por ator) e que vai sendo preenchido aos poucos, por cima, sem apagar nada.
   const enriched = libraryItems.map(item => {
     const already = previousById.get(item._id);
     if (already && already.cast && already.cast.length > 0) return already;
     return { id: item._id, type: item.type, name: item.name, poster: item.poster, cast: [] };
   });
-
-  await persist(authKey, enriched);
+  userCaches.set(authKey, { items: enriched });
 
   // agora melhora, um titulo de cada vez, so quem ainda esta sem elenco
   for (let i = 0; i < enriched.length; i++) {
@@ -70,21 +70,11 @@ async function buildCache(authKey) {
       const cast = await getTopCast(enriched[i].id, enriched[i].type);
       enriched[i] = { ...enriched[i], cast };
     } catch (err) {
-      // continua sem elenco por enquanto, tenta de novo numa proxima chamada
+      console.error(`Sem elenco por enquanto: ${enriched[i].id} (${enriched[i].type}):`, err.message);
     }
-    if (i % 4 === 0) await persist(authKey, enriched); // salva a cada poucos, nao a cada 1
+    userCaches.set(authKey, { items: enriched });
     await new Promise(r => setTimeout(r, 600)); // limite de requisicoes do TMDB gratis
   }
-  await persist(authKey, enriched);
-}
-
-async function persist(authKey, items) {
-  await store.save(authKey, {
-    updatedAt: Date.now(),
-    items,
-    movieActors: actorsOfType(items, 'movie'),
-    seriesActors: actorsOfType(items, 'series')
-  });
 }
 
 function ensureBuilding(authKey) {
@@ -95,11 +85,11 @@ function ensureBuilding(authKey) {
     .finally(() => building.delete(authKey));
 }
 
-function buildManifest(movieActors, seriesActors, logoUrl, configurationRequired) {
+function buildManifest(movieActors, seriesActors, logoUrl, needsConfig) {
   return {
-    id: 'community.bibliotecaporactor.publico',
+    id: 'community.castlist.publico',
     version: '1.0.0',
-    name: 'Biblioteca por Ator',
+    name: 'Cast List',
     description: 'Filtra sua biblioteca pessoal do Stremio (filmes e series) pelo ator principal de cada titulo. Configuravel: cada pessoa entra com a propria conta Stremio numa pagina de configuracao e recebe um addon individual - login e senha nao ficam armazenados, sao usados so na hora de gerar a chave de acesso.',
     logo: logoUrl,
     resources: ['catalog'],
@@ -118,7 +108,11 @@ function buildManifest(movieActors, seriesActors, logoUrl, configurationRequired
         extra: [{ name: 'genre', isRequired: false, options: seriesActors }]
       }
     ],
-    behaviorHints: { configurable: true, configurationRequired: !!configurationRequired }
+    // depois de instalado (needsConfig=false) o addon nao pede mais configuracao -
+    // a engrenagem some sozinha, so aparece antes de instalar
+    behaviorHints: needsConfig
+      ? { configurable: true, configurationRequired: true }
+      : {}
   };
 }
 
@@ -131,7 +125,7 @@ app.get('/configure', (req, res) => {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Biblioteca por Ator - Configurar</title>
+<title>Cast List - Configurar</title>
 <style>
   body{background:#0a0a0d;color:#f2f2f0;font-family:-apple-system,sans-serif;
        display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:20px;}
@@ -155,7 +149,7 @@ app.get('/configure', (req, res) => {
 </head>
 <body>
   <div class="card">
-    <h1>Biblioteca por Ator</h1>
+    <h1>Cast List</h1>
     <p>Entra com sua conta do Stremio pra gerar seu addon pessoal.</p>
     <form id="f">
       <label>Email do Stremio</label>
@@ -225,31 +219,33 @@ app.get('/:config/configure', (req, res) => {
   res.redirect('/configure');
 });
 
-app.get('/:config/manifest.json', async (req, res) => {
+app.get('/:config/manifest.json', (req, res) => {
   try {
     const { a: authKey } = decodeConfig(req.params.config);
     ensureBuilding(authKey);
-    const cache = await snapshot(authKey);
+    const cache = snapshot(authKey);
     const logoUrl = `https://${req.get('host')}/logo.png?v=2`;
-    res.json(buildManifest(cache.movieActors, cache.seriesActors, logoUrl, false));
+    const movieActors = actorsOfType(cache.items, 'movie');
+    const seriesActors = actorsOfType(cache.items, 'series');
+    res.json(buildManifest(movieActors, seriesActors, logoUrl, false));
   } catch (err) {
     res.status(400).json({ error: 'Configuracao invalida' });
   }
 });
 
-app.get('/:config/catalog/:type/:idWithExt', async (req, res) => {
-  await handleCatalog(req, res, req.params.idWithExt, null);
+app.get('/:config/catalog/:type/:idWithExt', (req, res) => {
+  handleCatalog(req, res, req.params.idWithExt, null);
 });
 
-app.get('/:config/catalog/:type/:id/:extraWithExt', async (req, res) => {
-  await handleCatalog(req, res, req.params.id, req.params.extraWithExt);
+app.get('/:config/catalog/:type/:id/:extraWithExt', (req, res) => {
+  handleCatalog(req, res, req.params.id, req.params.extraWithExt);
 });
 
-async function handleCatalog(req, res, idRaw, extraRaw) {
+function handleCatalog(req, res, idRaw, extraRaw) {
   try {
     const { a: authKey } = decodeConfig(req.params.config);
     ensureBuilding(authKey);
-    const cache = await snapshot(authKey);
+    const cache = snapshot(authKey);
     const type = req.params.type;
 
     let actorFiltro = null;
@@ -270,4 +266,4 @@ async function handleCatalog(req, res, idRaw, extraRaw) {
 }
 
 const port = process.env.PORT || 7000;
-app.listen(port, () => console.log(`Addon publico rodando na porta ${port}`));
+app.listen(port, () => console.log(`Cast List rodando na porta ${port}`));
