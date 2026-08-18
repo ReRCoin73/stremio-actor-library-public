@@ -51,44 +51,40 @@ async function buildCache(authKey) {
   const previousById = new Map((existing?.items || []).map(i => [i.id, i]));
 
   const libraryItems = await fetchLibrary(authKey);
-  const enriched = [];
 
-  // primeiro aproveita tudo que ja tinha sido buscado antes com sucesso
-  // (titulos com elenco vazio ficam de fora daqui, pra tentar de novo mais abaixo -
-  // cobre tanto falhas novas quanto as que ja ficaram presas de testes anteriores)
-  for (const item of libraryItems) {
+  // baseline: TODO titulo da biblioteca entra aqui na hora, mesmo sem elenco ainda.
+  // O catalogo nunca pode ficar menor do que a biblioteca real - so o elenco (usado
+  // no filtro por ator) e que vai sendo preenchido aos poucos, por cima, sem apagar nada.
+  const enriched = libraryItems.map(item => {
     const already = previousById.get(item._id);
-    if (already && already.cast && already.cast.length > 0) enriched.push(already);
-  }
-  await store.save(authKey, {
-    updatedAt: Date.now(),
-    items: [...enriched],
-    movieActors: actorsOfType(enriched, 'movie'),
-    seriesActors: actorsOfType(enriched, 'series')
+    if (already && already.cast && already.cast.length > 0) return already;
+    return { id: item._id, type: item.type, name: item.name, poster: item.poster, cast: [] };
   });
 
-  // agora busca os titulos novos + os que ficaram sem elenco antes, salvando no banco a
-  // cada um (quem ja estiver usando o addon ve a lista crescendo aos poucos, em vez de
-  // esperar tudo terminar, e o progresso fica salvo mesmo que o servidor reinicie no meio)
-  for (const item of libraryItems) {
-    const already = previousById.get(item._id);
-    if (already && already.cast && already.cast.length > 0) continue;
+  await persist(authKey, enriched);
+
+  // agora melhora, um titulo de cada vez, so quem ainda esta sem elenco
+  for (let i = 0; i < enriched.length; i++) {
+    if (enriched[i].cast.length > 0) continue;
     try {
-      const cast = await getTopCast(item._id, item.type);
-      enriched.push({ id: item._id, type: item.type, name: item.name, poster: item.poster, cast });
+      const cast = await getTopCast(enriched[i].id, enriched[i].type);
+      enriched[i] = { ...enriched[i], cast };
     } catch (err) {
-      // marca como falho (nao "castFailed: false") pra tentar de novo na proxima vez,
-      // em vez de ficar preso com elenco vazio pra sempre
-      enriched.push({ id: item._id, type: item.type, name: item.name, poster: item.poster, cast: [], castFailed: true });
+      // continua sem elenco por enquanto, tenta de novo numa proxima chamada
     }
-    await store.save(authKey, {
-      updatedAt: Date.now(),
-      items: [...enriched],
-      movieActors: actorsOfType(enriched, 'movie'),
-      seriesActors: actorsOfType(enriched, 'series')
-    });
+    if (i % 4 === 0) await persist(authKey, enriched); // salva a cada poucos, nao a cada 1
     await new Promise(r => setTimeout(r, 600)); // limite de requisicoes do TMDB gratis
   }
+  await persist(authKey, enriched);
+}
+
+async function persist(authKey, items) {
+  await store.save(authKey, {
+    updatedAt: Date.now(),
+    items,
+    movieActors: actorsOfType(items, 'movie'),
+    seriesActors: actorsOfType(items, 'series')
+  });
 }
 
 function ensureBuilding(authKey) {
