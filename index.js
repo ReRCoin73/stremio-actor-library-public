@@ -7,6 +7,10 @@ const { fetchLibrary } = require('./lib/stremioLibrary');
 const { getTopCast } = require('./lib/tmdb');
 
 const app = express();
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
+  next();
+});
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
