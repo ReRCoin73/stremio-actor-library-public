@@ -52,23 +52,27 @@ function actorsOfType(items, type) {
 }
 
 // -------- Builda a biblioteca+elenco de UM usuario, melhorando aos poucos --------
-async function buildCache(authKey) {
+// -------- Parte RAPIDA: sempre espera terminar antes de responder. So confere
+// quais titulos existem na biblioteca agora - nao chama TMDB, entao e rapido. --------
+async function syncLibrary(authKey) {
   const existing = userCaches.get(authKey);
   const previousById = new Map((existing?.items || []).map(i => [i.id, i]));
 
   const libraryItems = await fetchLibrary(authKey);
 
-  // baseline: TODO titulo da biblioteca entra aqui na hora, mesmo sem elenco ainda.
-  // O catalogo nunca fica menor que a biblioteca real - so o elenco (usado no filtro
-  // por ator) e que vai sendo preenchido aos poucos, por cima, sem apagar nada.
   const enriched = libraryItems.map(item => {
     const already = previousById.get(item._id);
     if (already && already.cast && already.cast.length > 0) return already;
     return { id: item._id, type: item.type, name: item.name, poster: item.poster, cast: [] };
   });
   userCaches.set(authKey, { items: enriched });
+  return enriched;
+}
 
-  // agora melhora, um titulo de cada vez, so quem ainda esta sem elenco
+// -------- Parte LENTA: busca o ator de quem ainda nao tem, em segundo plano --------
+async function buildCache(authKey) {
+  const enriched = await syncLibrary(authKey);
+
   // processa em blocos paralelos (varios titulos ao mesmo tempo) em vez de um por um -
   // muito mais rapido; a TMDB aguenta dezenas de pedidos simultaneos
   const pendentes = enriched.map((item, idx) => ({ item, idx })).filter(x => x.item.cast.length === 0);
@@ -250,10 +254,11 @@ app.get('/:config/status', (req, res) => {
   }
 });
 
-app.get('/:config/manifest.json', (req, res) => {
+app.get('/:config/manifest.json', async (req, res) => {
   try {
     const { a: authKey } = decodeConfig(req.params.config);
-    ensureBuilding(authKey);
+    await syncLibrary(authKey); // rapido, sempre esperado - titulo novo entra na hora
+    ensureBuilding(authKey); // busca elenco de quem falta, em segundo plano
     const cache = snapshot(authKey);
     const logoUrl = `https://${req.get('host')}/logo.png?v=2`;
     const movieActors = actorsOfType(cache.items, 'movie');
@@ -264,18 +269,19 @@ app.get('/:config/manifest.json', (req, res) => {
   }
 });
 
-app.get('/:config/catalog/:type/:idWithExt', (req, res) => {
-  handleCatalog(req, res, req.params.idWithExt, null);
+app.get('/:config/catalog/:type/:idWithExt', async (req, res) => {
+  await handleCatalog(req, res, req.params.idWithExt, null);
 });
 
-app.get('/:config/catalog/:type/:id/:extraWithExt', (req, res) => {
-  handleCatalog(req, res, req.params.id, req.params.extraWithExt);
+app.get('/:config/catalog/:type/:id/:extraWithExt', async (req, res) => {
+  await handleCatalog(req, res, req.params.id, req.params.extraWithExt);
 });
 
-function handleCatalog(req, res, idRaw, extraRaw) {
+async function handleCatalog(req, res, idRaw, extraRaw) {
   try {
     const { a: authKey } = decodeConfig(req.params.config);
-    ensureBuilding(authKey);
+    await syncLibrary(authKey); // rapido, sempre esperado - garante titulo novo aparecendo na hora
+    ensureBuilding(authKey); // busca elenco de quem falta, em segundo plano
     const cache = snapshot(authKey);
     const type = req.params.type;
 
