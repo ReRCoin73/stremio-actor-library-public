@@ -290,5 +290,18 @@ function handleCatalog(req, res, idRaw, extraRaw) {
   }
 }
 
+// Endpoint leve so pra manter o servidor acordado (usado por um ping externo)
+app.get('/ping', (req, res) => res.send('ok'));
+
 const port = process.env.PORT || 7000;
-app.listen(port, () => console.log(`Cast List rodando na porta ${port}`));
+app.listen(port, () => {
+  console.log(`Cast List rodando na porta ${port}`);
+
+  // Reconfere a biblioteca de todo mundo que ja usou o addon, a cada 5 minutos,
+  // sozinho - sem precisar desinstalar/reinstalar pra ver titulo novo.
+  setInterval(() => {
+    for (const authKey of userCaches.keys()) {
+      ensureBuilding(authKey);
+    }
+  }, 5 * 60 * 1000);
+});
