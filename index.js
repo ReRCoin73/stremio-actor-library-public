@@ -2,6 +2,7 @@ require('dotenv').config();
 const path = require('path');
 const express = require('express');
 const { login } = require('./lib/stremioAuth');
+const users = require('./lib/users');
 const { fetchLibrary } = require('./lib/stremioLibrary');
 const { getTopCast } = require('./lib/tmdb');
 
@@ -207,6 +208,7 @@ app.post('/configure', async (req, res) => {
     const manifestUrl = `https://${host}/${config}/manifest.json`;
     const stremioLink = `stremio://${host}/${config}/manifest.json`;
 
+    users.remember(authKey); // registra que essa pessoa existe, pro relogio automatico achar ela depois de reiniciar
     ensureBuilding(authKey); // comeca a montar em segundo plano, sem segurar a resposta
 
     res.json({ manifestUrl, stremioLink });
@@ -294,8 +296,14 @@ function handleCatalog(req, res, idRaw, extraRaw) {
 app.get('/ping', (req, res) => res.send('ok'));
 
 const port = process.env.PORT || 7000;
-app.listen(port, () => {
+app.listen(port, async () => {
   console.log(`Cast List rodando na porta ${port}`);
+
+  // Ao ligar (depois de reiniciar), traz de volta todo mundo que ja configurou o
+  // addon algum dia - nao precisa esperar a pessoa abrir o Stremio pra "avisar".
+  const conhecidos = await users.listAll();
+  console.log(`Retomando ${conhecidos.length} usuario(s) conhecido(s)`);
+  conhecidos.forEach(authKey => ensureBuilding(authKey));
 
   // Reconfere a biblioteca de todo mundo que ja usou o addon, a cada 5 minutos,
   // sozinho - sem precisar desinstalar/reinstalar pra ver titulo novo.
